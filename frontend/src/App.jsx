@@ -6,32 +6,29 @@ import {
   ChevronRight, FileSearch, FolderOpen, GitBranch, HardDrive, LoaderCircle,
   Eye, EyeOff, History, LockKeyhole, LogOut, Mail, MessageSquarePlus, Network, Plus,
   Search, Send, Share2, ShieldCheck, Sparkles, Square, Trash2,
-  UploadCloud, UserPlus, UserRound, Users, X, Zap,
+  UploadCloud, UserPlus, UserRound, Users, X, Zap, KeyRound, ScrollText, Quote, ExternalLink,
 } from 'lucide-react'
 import { api, post } from './api'
 import DocumentViewer from './components/DocumentViewer'
 import FileExplorer from './components/FileExplorer'
 import ConfirmDialog from './components/ui/ConfirmDialog'
 import RecordCombobox from './components/ui/RecordCombobox'
+import AccessAudit from './components/AccessAudit'
+import { BrandMark, ClassificationBadge, TypeBadge, classificationOrder } from './components/ui/Badges'
 
 const GraphView = lazy(() => import('./components/GraphView'))
 
 const tabs = [
-  { id: 'search', label: 'Search records', icon: FileSearch },
-  { id: 'files', label: 'Browse files', icon: FolderOpen },
-  { id: 'ask', label: 'Ask Detroit AI', icon: Bot },
+  { id: 'ask', label: 'Ask the records', icon: Bot },
+  { id: 'search', label: 'Search', icon: FileSearch },
+  { id: 'files', label: 'Document library', icon: FolderOpen },
   { id: 'compare', label: 'Compare versions', icon: ArrowLeftRight },
   { id: 'graph', label: 'Knowledge graph', icon: Network },
-  { id: 'upload', label: 'Add document', icon: UploadCloud },
+  { id: 'access', label: 'Access & audit', icon: ScrollText },
+  { id: 'upload', label: 'Add record', icon: UploadCloud },
 ]
 
-function DetroitMark({ className = '' }) {
-  return <img className={className} src="/detroit-records-mark.png" alt="" aria-hidden="true" />
-}
-
-function TypeBadge({ type }) {
-  return <span className={`type-badge type-${type}`}>{(type || 'other').replaceAll('_', ' ')}</span>
-}
+const PRODUCT = 'Civic Records AI'
 
 function EmptyState({ icon: Icon = BookOpen, title, children }) {
   return <div className="empty-state"><Icon /><h3>{title}</h3><p>{children}</p></div>
@@ -52,6 +49,16 @@ function AuthScreen({ onAuthenticated }) {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [demo, setDemo] = useState(null)
+
+  useEffect(() => { api('/api/demo/accounts').then(setDemo).catch(() => setDemo(null)) }, [])
+
+  async function demoLogin(email) {
+    setLoading(true); setError('')
+    try { const data = await post('/api/demo/login', { email }); onAuthenticated(data.user) }
+    catch (err) { setError(err.message) }
+    finally { setLoading(false) }
+  }
 
   async function submit(event) {
     event.preventDefault()
@@ -80,20 +87,26 @@ function AuthScreen({ onAuthenticated }) {
 
   return <main className="auth-page">
     <section className="auth-brand-panel">
-      <div className="auth-brand"><span><DetroitMark /></span><div><strong>Detroit Records</strong><small>City of Detroit</small></div></div>
-      <div className="auth-promise"><p className="eyebrow">Municipal record intelligence</p><h1>Find the record. Follow the evidence.</h1><p>Search city documents, ask grounded questions, and share cited answers with colleagues.</p></div>
-      <div className="auth-local"><HardDrive size={16} /><span><strong>Private local processing</strong><small>Records and model inference remain within this deployment</small></span></div>
+      <div className="auth-brand"><BrandMark size={46} /><div><strong>{PRODUCT}</strong><small>On-prem document intelligence</small></div></div>
+      <div className="auth-promise"><p className="eyebrow">For public safety and local government</p><h1>Every answer cites its source. No data leaves the building.</h1><p>Ask questions across incident reports, inspections, and SOPs. Answers come from a model running on your own hardware, filtered by each user's clearance and written to an audit log.</p></div>
+      <div className="auth-local"><HardDrive size={16} /><span><strong>Air-gapped by design</strong><small>OCR, embeddings, vector search, and inference run on this server</small></span></div>
     </section>
     <section className="auth-form-panel">
       <div className="auth-card">
         <div className="auth-icon">{mode === 'signup' ? <UserPlus /> : <LockKeyhole />}</div>
         <p className="eyebrow">{mode === 'signup' ? 'Create your account' : 'Welcome back'}</p>
-        <h2>{mode === 'signup' ? 'Create your account' : 'Sign in to Detroit Records'}</h2>
-        <p className="auth-subtitle">{mode === 'signup' ? 'Your account receives a unique user ID for private and shared chats.' : 'Continue to your saved conversations and city records.'}</p>
+        <h2>{mode === 'signup' ? 'Create your account' : `Sign in to ${PRODUCT}`}</h2>
+        <p className="auth-subtitle">{mode === 'signup' ? 'New accounts start with the Firefighter role. A records administrator can grant more access.' : 'Continue to your saved conversations and department records.'}</p>
+        {demo?.enabled && mode === 'login' && <div className="demo-accounts">
+          <div className="demo-accounts-head"><KeyRound size={13} /><span>Demo sign-in · {demo.deployment}</span></div>
+          {demo.accounts.map(account => <button type="button" key={account.email} onClick={() => demoLogin(account.email)} disabled={loading}>
+            <i>{account.display_name.replace(/^(Capt\.|FF)\s/, '').slice(0, 1)}</i><span><strong>{account.display_name}</strong><small>{account.role_label}</small></span><ChevronRight size={15} />
+          </button>)}
+        </div>}
         <div className="auth-tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => switchMode('login')}>Sign in</button><button className={mode === 'signup' ? 'active' : ''} onClick={() => switchMode('signup')}>Sign up</button></div>
         <form onSubmit={submit}>
           {mode === 'signup' && <label><span>Display name</span><div><UserRound size={16} /><input value={displayName} onChange={event => setDisplayName(event.target.value)} autoComplete="name" required minLength="2" placeholder="Jordan Lee" /></div></label>}
-          <label><span>Email address</span><div><Mail size={16} /><input type="email" value={email} onChange={event => setEmail(event.target.value)} autoComplete="email" required placeholder="you@detroitmi.gov" /></div></label>
+          <label><span>Email address</span><div><Mail size={16} /><input type="email" value={email} onChange={event => setEmail(event.target.value)} autoComplete="email" required placeholder="you@department.example" /></div></label>
           <label><span>Password</span><div><LockKeyhole size={16} /><input type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} required minLength={mode === 'signup' ? 10 : 1} placeholder={mode === 'signup' ? 'At least 10 characters' : 'Your password'} /><button className="auth-password-toggle" type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label>
           {mode === 'signup' && <label><span>Confirm password</span><div><LockKeyhole size={16} /><input type={showConfirmPassword ? 'text' : 'password'} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} autoComplete="new-password" required minLength={10} placeholder="Type your password again" aria-invalid={Boolean(confirmPassword && password !== confirmPassword)} /><button className="auth-password-toggle" type="button" onClick={() => setShowConfirmPassword(value => !value)} aria-label={showConfirmPassword ? 'Hide confirmed password' : 'Show confirmed password'} aria-pressed={showConfirmPassword}>{showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label>}
           {error && <div className="auth-error">{error}</div>}
@@ -130,16 +143,16 @@ function SearchScreen({ onOpenDocument, initialQuery = '' }) {
 
   return <div className="screen search-screen">
     <div className="screen-heading split-heading">
-      <div><p className="eyebrow">Unified retrieval</p><h1>Search every city record.</h1><p>Keyword precision and local semantic search, ranked together.</p></div>
-      <div className="heading-stat"><span>100%</span><small>on this machine</small></div>
+      <div><p className="eyebrow">Hybrid retrieval</p><h1>Search the records you're cleared to see.</h1><p>SQLite full-text search and ChromaDB vector search, merged with reciprocal-rank fusion.</p></div>
+      <div className="heading-stat"><span>0</span><small>external calls</small></div>
     </div>
     <form className="search-hero" onSubmit={runSearch}>
       <Search size={21} />
-      <input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Try “current Harbor Avenue height limit”" />
+      <input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Try “714 Marquette rear stair”" />
       <button className="primary-button" disabled={loading}>{loading ? <LoaderCircle className="spin" size={18} /> : 'Search'}</button>
     </form>
     <div className="query-suggestions">
-      {['714 Marquette rear stair', 'Harbor District setback', 'ClearCurrent outage response'].map(item =>
+      {['714 Marquette rear stair', 'standpipe attack line crew', 'e-bike battery reignition'].map(item =>
         <button key={item} onClick={() => setQuery(item)}>{item}</button>)}
     </div>
     <ErrorNotice error={error} onClose={() => setError('')} />
@@ -148,7 +161,7 @@ function SearchScreen({ onOpenDocument, initialQuery = '' }) {
       {results.map((result, index) => <button className="result-card" key={result.chunk_id} onClick={() => onOpenDocument(result.document_id, result.page_number, result.snippet)}>
         <div className="result-rank">{String(index + 1).padStart(2, '0')}</div>
         <div className="result-content">
-          <div className="result-title-row"><h3>{result.title}</h3><TypeBadge type={result.doc_type} /></div>
+          <div className="result-title-row"><h3>{result.title}</h3><TypeBadge type={result.doc_type} /><ClassificationBadge value={result.classification} compact /></div>
           <p>{result.snippet}</p>
           <div className="result-meta"><span>Page {result.page_number}</span><span>{result.matched_by.replace('+', ' + ')}</span></div>
         </div>
@@ -159,7 +172,7 @@ function SearchScreen({ onOpenDocument, initialQuery = '' }) {
     {searched && !loading && !error && !results.length && <EmptyState icon={Search} title="No matching records">Try a broader topic or check the wording.</EmptyState>}
     {!searched && <div className="search-intro-grid">
       <article><Zap /><h3>Find meaning, not filenames</h3><p>Search concepts even when the records use different wording.</p></article>
-      <article><ShieldCheck /><h3>Data stays local</h3><p>Embeddings, records, and model inference never leave this machine.</p></article>
+      <article><ShieldCheck /><h3>Filtered by clearance</h3><p>Records above your role's classification never enter the result set.</p></article>
       <article><GitBranch /><h3>Follow the evidence</h3><p>Every result points to the exact source page and passage.</p></article>
     </div>}
   </div>
@@ -185,17 +198,64 @@ function ActivityTrace({ trace, reasoningSummary, reasoningComplete, loading, el
   </section>
 }
 
-function AssistantTurn({ message, activeElapsed }) {
+const STOP = new Set('the and for with that this what does from were was are have has did how which when where who why about into than then there their they your you any all its not but can will shall'.split(' '))
+
+function highlightTerms(text, question) {
+  const terms = [...new Set((question || '').toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) || [])].filter(term => !STOP.has(term))
+  if (!terms.length) return text
+  const pattern = new RegExp(`(${terms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
+  return text.split(pattern).map((part, index) => terms.includes(part.toLowerCase()) ? <mark key={index}>{part}</mark> : part)
+}
+
+function CitationList({ citations, question, onOpenDocument }) {
+  if (!citations?.length) return null
+  return <section className="citation-list" aria-label="Cited sources">
+    <div className="citation-list-head"><Quote size={13} /><span>{citations.length} cited {citations.length === 1 ? 'passage' : 'passages'}</span><small>Click to open the source page</small></div>
+    <ol>{citations.map(citation => <li key={citation.marker} id={`cite-${citation.marker}`}>
+      <button onClick={() => onOpenDocument?.(citation.document_id, citation.page_number, citation.snippet)}>
+        <span className="citation-marker">{citation.marker}</span>
+        <div>
+          <div className="citation-title"><strong>{citation.document_title}</strong>{citation.classification && <ClassificationBadge value={citation.classification} compact />}<small>Page {citation.page_number}</small></div>
+          <p>{highlightTerms(citation.snippet, question)}</p>
+        </div>
+        <ExternalLink size={14} className="citation-open" />
+      </button>
+    </li>)}</ol>
+  </section>
+}
+
+function withCitationLinks(content) {
+  return (content || '').replace(/\[C(\d+)\]/g, '[C$1](#cite-C$1)')
+}
+
+function AnswerMarkdown({ children, citations, onOpenDocument }) {
+  const byMarker = Object.fromEntries((citations || []).map(item => [item.marker, item]))
+  return <div className="markdown-body">
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      a: ({ href, children: label }) => {
+        const marker = href?.startsWith('#cite-') ? href.slice(6) : null
+        if (!marker) return <a href={href}>{label}</a>
+        const citation = byMarker[marker]
+        return <button type="button" className="cite-chip" title={citation ? `${citation.document_title}, page ${citation.page_number}` : marker}
+          onClick={() => citation && onOpenDocument?.(citation.document_id, citation.page_number, citation.snippet)}>{marker.slice(1)}</button>
+      },
+    }}>{withCitationLinks(children)}</ReactMarkdown>
+  </div>
+}
+
+function AssistantTurn({ message, activeElapsed, question, onOpenDocument }) {
   const streaming = message.status === 'streaming'
+  const finalCitations = streaming ? [] : message.citations
   return <div className="chat-turn assistant-turn">
     <div className="chat-avatar assistant-avatar"><Sparkles size={16} /></div>
     <div className="chat-turn-body">
-      <div className="chat-speaker"><strong>Detroit Records AI</strong>{streaming && <em>Streaming</em>}</div>
+      <div className="chat-speaker"><strong>{PRODUCT}</strong>{streaming && <em>Streaming</em>}</div>
       <article className={`chat-bubble assistant-bubble ${streaming ? 'streaming' : ''}`}>
         <ActivityTrace trace={message.trace} reasoningSummary={message.reasoning_summary} reasoningComplete={message.reasoningComplete} loading={streaming} elapsed={streaming ? activeElapsed : message.elapsed} />
-        {message.content ? <MarkdownAnswer>{message.content}</MarkdownAnswer> : streaming ? <div className="answer-awaiting"><span></span>Preparing the answer…</div> : null}
+        {message.content ? <AnswerMarkdown citations={message.citations} onOpenDocument={onOpenDocument}>{message.content}</AnswerMarkdown> : streaming ? <div className="answer-awaiting"><span></span>Preparing the answer…</div> : null}
         {message.error && <div className="chat-error">{message.error}</div>}
         {streaming && message.content && <span className="stream-cursor" />}
+        <CitationList citations={finalCitations} question={question} onOpenDocument={onOpenDocument} />
       </article>
     </div>
   </div>
@@ -419,9 +479,9 @@ function AskScreen({ onOpenDocument }) {
   }
 
   const suggestions = [
-    "What are the current height, setback, and closing-time rules in the Harbor Mixed-Use District?",
-    "Was the code violation at 714 Marquette Street actually resolved?",
-    "What changed in the city's water-meter project?",
+    'Was the rear exit stair violation at 714 Marquette Street actually resolved?',
+    'What hose size and crew size does SOP 204 require now?',
+    'How should crews handle an e-bike battery fire?',
   ]
   const readOnly = activeConversation?.access === 'shared'
   const conversationTitle = activeConversation?.title || 'New conversation'
@@ -443,7 +503,7 @@ function AskScreen({ onOpenDocument }) {
 
       <section className="simple-chat-main">
         <header className="simple-chat-header">
-          <div className="chat-header-identity"><span><Sparkles size={16} /></span><div><strong>{conversationTitle}</strong><small>{readOnly ? `Shared by ${activeConversation.owner_name}` : 'Detroit Records AI'}</small></div></div>
+          <div className="chat-header-identity"><span><Sparkles size={16} /></span><div><strong>{conversationTitle}</strong><small>{readOnly ? `Shared by ${activeConversation.owner_name}` : 'Answers cite records you are cleared to read'}</small></div></div>
           <div className="chat-header-actions">
             <button className={sourcesOpen ? 'active' : ''} onClick={() => setSourcesOpen(value => !value)} aria-expanded={sourcesOpen}><BookOpen size={14} /><span>Sources</span><small>{conversationSources.length}</small></button>
             {activeConversation?.access === 'owner' && <button onClick={() => setShareOpen(true)} disabled={loading}><Share2 size={14} /><span>Share</span></button>}
@@ -459,21 +519,21 @@ function AskScreen({ onOpenDocument }) {
         </section>}
 
         <div className="simple-chat-content">
-          {!messages.length && <div className="simple-chat-empty"><span><Sparkles size={22} /></span><h1>How can I help?</h1><p>Ask a question about Detroit’s municipal records.</p><div className="ask-suggestions">{suggestions.map(item =>
+          {!messages.length && <div className="simple-chat-empty"><span><Sparkles size={22} /></span><h1>Ask the department's records</h1><p>Answers are drawn only from records your role can see, with every claim linked to its source page.</p><div className="ask-suggestions">{suggestions.map(item =>
             <button key={item} onClick={() => ask(null, item)}><p>{item}</p><ChevronRight size={15} /></button>)}</div></div>}
           {messages.length > 0 && <div className="conversation-thread">{messages.map(message => message.role === 'user'
             ? <div className="chat-turn user-turn" key={message.id}><div className="chat-turn-body"><div className="chat-speaker"><strong>You</strong></div><div className="chat-bubble user-bubble">{message.content}</div></div></div>
-            : <AssistantTurn key={message.id} message={message} activeElapsed={message.id === activeTurnId ? elapsed : message.elapsed} />)}<div ref={threadEndRef} /></div>}
+            : <AssistantTurn key={message.id} message={message} question={messages[messages.indexOf(message) - 1]?.content} onOpenDocument={onOpenDocument} activeElapsed={message.id === activeTurnId ? elapsed : message.elapsed} />)}<div ref={threadEndRef} /></div>}
         </div>
 
-        {readOnly ? <div className="shared-readonly"><Users size={15} /><span><strong>Shared conversation</strong><small>You can read this chat and open its evidence. Only the owner can continue it.</small></span></div> : <form className="ask-composer" onSubmit={ask}><textarea value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={handleComposerKeyDown} rows="1" aria-label="Message Detroit Records AI" placeholder={messages.length ? 'Ask a follow-up…' : 'Message Detroit Records AI…'} /><button type={loading ? 'button' : 'submit'} onClick={loading ? stopStreaming : undefined} disabled={!loading && !question.trim()} aria-label={loading ? 'Stop generating' : 'Send message'}>{loading ? <><Square size={14} fill="currentColor" /><span>Stop</span></> : <><Send size={16} /><span>Send</span></>}</button></form>}
+        {readOnly ? <div className="shared-readonly"><Users size={15} /><span><strong>Shared conversation</strong><small>You can read this chat and open its evidence. Only the owner can continue it.</small></span></div> : <form className="ask-composer" onSubmit={ask}><textarea value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={handleComposerKeyDown} rows="1" aria-label="Ask a question about the records" placeholder={messages.length ? 'Ask a follow-up…' : 'Ask about incidents, inspections, SOPs…'} /><button type={loading ? 'button' : 'submit'} onClick={loading ? stopStreaming : undefined} disabled={!loading && !question.trim()} aria-label={loading ? 'Stop generating' : 'Send message'}>{loading ? <><Square size={14} fill="currentColor" /><span>Stop</span></> : <><Send size={16} /><span>Send</span></>}</button></form>}
       </section>
     </div>
 
     {shareOpen && <div className="dialog-backdrop" role="presentation"><section className="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title">
       <button className="dialog-close" onClick={() => setShareOpen(false)} aria-label="Close share dialog"><X size={17} /></button>
-      <div className="share-dialog-icon"><Share2 /></div><p className="eyebrow">Read-only collaboration</p><h2 id="share-title">Share this conversation</h2><p>Invite another registered Detroit Records user by email. They can read the chat and open cited records.</p>
-      <form onSubmit={shareConversation}><label><Mail size={15} /><input type="email" value={shareEmail} onChange={event => setShareEmail(event.target.value)} placeholder="colleague@detroitmi.gov" required /></label><button disabled={shareLoading}>{shareLoading ? <LoaderCircle className="spin" size={15} /> : 'Share'}</button></form>
+      <div className="share-dialog-icon"><Share2 /></div><p className="eyebrow">Read-only collaboration</p><h2 id="share-title">Share this conversation</h2><p>Invite another registered user by email. They can read the chat, and open cited records only if their own role allows it.</p>
+      <form onSubmit={shareConversation}><label><Mail size={15} /><input type="email" value={shareEmail} onChange={event => setShareEmail(event.target.value)} placeholder="colleague@department.example" required /></label><button disabled={shareLoading}>{shareLoading ? <LoaderCircle className="spin" size={15} /> : 'Share'}</button></form>
       {shareError && <div className="share-error">{shareError}</div>}
       <div className="shared-people"><span>People with access · {shares.length}</span>{shares.map(person => <div key={person.id}><i>{person.display_name.slice(0, 1).toUpperCase()}</i><p><strong>{person.display_name}</strong><small>{person.email}</small></p><button onClick={() => unshare(person.id)}>Remove</button></div>)}{!shares.length && <p>No one else has access yet.</p>}</div>
     </section></div>}
@@ -577,7 +637,7 @@ function CompareScreen({ documents }) {
           <div className="diff-header"><strong>Text comparison</strong><div><span className="legend added"></span>Added <span className="legend removed"></span>Removed</div></div>
           <div className="diff-view">{result.diff.map((line, index) => <div className={`diff-line ${line.type}`} key={index}><span>{line.type === 'added' ? '+' : line.type === 'removed' ? '−' : ' '}</span><code>{line.text || ' '}</code></div>)}</div>
         </>}
-        {!result && !loading && <EmptyState icon={ArrowLeftRight} title="Choose two records">Type at least three letters in each field to search the city’s record library.</EmptyState>}
+        {!result && !loading && <EmptyState icon={ArrowLeftRight} title="Choose two records">Type at least three letters in each field, for example “SOP 204”.</EmptyState>}
       </section>
     </div>
     <ConfirmDialog
@@ -595,7 +655,10 @@ function CompareScreen({ documents }) {
 
 const uploadStages = ['Parsing document', 'OCR check', 'Creating passages', 'Building embeddings', 'Extracting entities', 'Ready']
 
-function UploadScreen({ onComplete }) {
+function UploadScreen({ onComplete, user }) {
+  const canIngest = user.permissions?.includes('ingest')
+  const allowedClasses = classificationOrder.filter(item => user.classifications?.includes(item))
+  const [classification, setClassification] = useState('internal')
   const [file, setFile] = useState(null)
   const [stage, setStage] = useState(-1)
   const [result, setResult] = useState(null)
@@ -606,7 +669,7 @@ function UploadScreen({ onComplete }) {
     if (!selected) return
     setFile(selected); setResult(null); setError(''); setStage(0)
     const timer = window.setInterval(() => setStage(value => Math.min(value + 1, 4)), 950)
-    const body = new FormData(); body.append('file', selected)
+    const body = new FormData(); body.append('file', selected); body.append('classification', classification)
     try {
       const data = await api('/api/documents/upload', { method: 'POST', body })
       setStage(5); setResult(data); onComplete?.()
@@ -616,24 +679,28 @@ function UploadScreen({ onComplete }) {
 
   function choose(files) { const selected = files?.[0]; if (selected) upload(selected) }
   return <div className="screen upload-screen">
-    <div className="screen-heading"><p className="eyebrow">Live local ingestion</p><h1>Turn a new file into connected evidence.</h1><p>Text, passages, vectors, and entities are built here—then available immediately.</p></div>
-    {!result && stage < 0 && <label className={`dropzone ${dragging ? 'dragging' : ''}`} onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); choose(e.dataTransfer.files) }}>
+    <div className="screen-heading"><p className="eyebrow">Local ingestion</p><h1>Add a record to the collection.</h1><p>Parsing, OCR for scanned pages, chunking, embedding, and entity extraction all run on this server.</p></div>
+    {!canIngest && <div className="policy-notice"><LockKeyhole size={16} /><span><strong>Your role can't add records.</strong> Ingestion requires the Fire Officer or Records Administrator role. This attempt would be logged.</span></div>}
+    {canIngest && !result && stage < 0 && <div className="classify-row" role="radiogroup" aria-label="Classification for the new record"><span>Classify as</span>{allowedClasses.map(item => <button key={item} role="radio" aria-checked={classification === item} className={classification === item ? 'active' : ''} onClick={() => setClassification(item)}><ClassificationBadge value={item} /></button>)}</div>}
+    {canIngest && !result && stage < 0 && <label className={`dropzone ${dragging ? 'dragging' : ''}`} onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); choose(e.dataTransfer.files) }}>
       <input type="file" accept=".pdf,.docx,.txt,.md" onChange={e => choose(e.target.files)} />
-      <div className="upload-icon"><UploadCloud /></div><h3>Drop a municipal record here</h3><p>or click to browse · PDF, DOCX, TXT, MD</p>
+      <div className="upload-icon"><UploadCloud /></div><h3>Drop a record here</h3><p>or click to browse · PDF, DOCX, TXT, MD</p>
     </label>}
     <ErrorNotice error={error} onClose={() => setError('')} />
     {stage >= 0 && !result && <div className="ingestion-card"><div className="file-chip"><div><BookOpen /></div><p><strong>{file?.name}</strong><span>{file ? `${(file.size / 1024).toFixed(1)} KB` : ''}</span></p></div><div className="stage-list">{uploadStages.map((item, index) =>
       <div key={item} className={index < stage ? 'done' : index === stage ? 'active' : ''}><span>{index < stage ? <Check size={15} /> : index === stage ? <LoaderCircle className="spin" size={15} /> : index + 1}</span><p>{item}</p><small>{index < stage ? 'Complete' : index === stage ? 'Working locally…' : 'Waiting'}</small></div>)}</div></div>}
-    {result && <div className="upload-success"><div className="success-pulse"><Check /></div><p className="eyebrow">Ingestion complete</p><h2>{result.title}</h2><p>The record is searchable now, and the knowledge graph has been updated.</p><div className="ingest-metrics"><span><strong>{result.page_count}</strong> pages</span><span><strong>{result.chunk_count}</strong> passages</span><span><strong>{result.entity_count}</strong> entities</span><span><strong>{result.relation_count}</strong> links</span></div><button className="primary-button" onClick={() => onComplete(result.document_id)}>Open new document <ChevronRight size={16} /></button></div>}
+    {result && <div className="upload-success"><div className="success-pulse"><Check /></div><p className="eyebrow">Ingestion complete</p><h2>{result.title}</h2><p>The record is searchable now for roles cleared for <strong>{result.classification}</strong> records, and the knowledge graph has been updated.</p><div className="ingest-metrics"><span><strong>{result.page_count}</strong> pages</span><span><strong>{result.chunk_count}</strong> passages</span><span><strong>{result.entity_count}</strong> entities</span><span><strong>{result.relation_count}</strong> links</span></div><button className="primary-button" onClick={() => onComplete(result.document_id)}>Open new document <ChevronRight size={16} /></button></div>}
   </div>
 }
 
 function AuthenticatedApp({ user, onLogout }) {
   const contentAreaRef = useRef(null)
   const viewerReturnScrollRef = useRef(0)
-  const [activeTab, setActiveTab] = useState('search')
-  const [visitedTabs, setVisitedTabs] = useState(() => new Set(['search']))
+  const initialTab = tabs.some(tab => tab.id === window.location.hash.slice(1)) ? window.location.hash.slice(1) : 'ask'
+  const [activeTab, setActiveTab] = useState(initialTab)
+  const [visitedTabs, setVisitedTabs] = useState(() => new Set([initialTab]))
   const [documents, setDocuments] = useState([])
+  const [hiddenCount, setHiddenCount] = useState(0)
   const [health, setHealth] = useState(null)
   const [viewer, setViewer] = useState(null)
   const [viewerHistory, setViewerHistory] = useState([])
@@ -641,7 +708,7 @@ function AuthenticatedApp({ user, onLogout }) {
 
   async function refresh() {
     const [docData, healthData] = await Promise.all([api('/api/documents'), api('/api/health')]).catch(() => [{ documents: [] }, null])
-    setDocuments(docData?.documents || []); setHealth(healthData)
+    setDocuments(docData?.documents || []); setHiddenCount(docData?.hidden_by_policy || 0); setHealth(healthData)
   }
   useEffect(() => { refresh() }, [])
 
@@ -692,6 +759,7 @@ function AuthenticatedApp({ user, onLogout }) {
         search: 'Back to search results',
         files: 'Back to files',
         ask: 'Back to question and answer',
+        access: 'Back to access & audit',
         compare: 'Back to comparison',
         graph: 'Back to knowledge graph',
         upload: 'Back to upload',
@@ -699,15 +767,18 @@ function AuthenticatedApp({ user, onLogout }) {
 
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><DetroitMark /></div><div><strong>Detroit Records</strong><span>Municipal intelligence</span></div></div>
+      <div className="brand"><BrandMark size={40} /><div><strong>{PRODUCT}</strong><span>{health?.deployment || 'On-prem deployment'}</span></div></div>
       <nav>{tabs.map(tab => { const Icon = tab.icon; return <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => changeTab(tab.id)}><Icon size={18} /><span>{tab.label}</span>{activeTab === tab.id && <i />}</button> })}</nav>
-      <div className="sidebar-insight"><Sparkles /><p><strong>{documents.length || '—'} records connected</strong><span>{health?.document_count ? 'Rivergate demo collection' : 'Ready for local seed data'}</span></p></div>
-      <div className="account-card"><span>{user.display_name.slice(0, 1).toUpperCase()}</span><p><strong>{user.display_name}</strong><small>{user.email}</small><em>ID {user.id.slice(0, 8)}</em></p><button onClick={onLogout} aria-label="Sign out"><LogOut size={15} /></button></div>
-      <div className="local-status"><span className={health?.local_ai?.available ? 'online' : 'offline'}></span><div><strong>Offline runtime</strong><small>{health?.local_ai?.available ? 'Local models ready' : 'Ollama setup needed'}</small></div></div>
-      <div className="city-wordmark"><small>CITY OF</small><span>DETROIT</span></div>
+      <div className="role-card" aria-label="Your access level">
+        <div className="role-card-head"><ShieldCheck size={14} /><span>{user.role_label}</span></div>
+        <div className="role-levels">{classificationOrder.map(item => <span key={item} className={user.classifications?.includes(item) ? 'on' : 'off'} title={`${item}: ${user.classifications?.includes(item) ? 'visible' : 'withheld'}`}>{item.slice(0, 1).toUpperCase() + item.slice(1)}</span>)}</div>
+        <small>{documents.length} records visible{hiddenCount ? ` · ${hiddenCount} withheld by policy` : ''}</small>
+      </div>
+      <div className="account-card"><span>{user.display_name.replace(/^(Capt\.|FF)\s/, '').slice(0, 1).toUpperCase()}</span><p><strong>{user.display_name}</strong><small>{user.email}</small></p><button onClick={onLogout} aria-label="Sign out"><LogOut size={15} /></button></div>
+      <div className="local-status"><span className={health?.local_ai?.available ? 'online' : 'offline'}></span><div><strong>Air-gapped runtime</strong><small>{health?.local_ai?.provider === 'demo' ? 'Demo provider · no LLM' : health?.local_ai?.available ? `Local model · ${health.local_ai.llm_model}` : 'Local model unavailable'}</small></div></div>
     </aside>
     <main className="main-area">
-      <header className="topbar"><DetroitMark className="topbar-mark" /><div className="topbar-actions"><span className="topbar-user">{user.display_name}</span><button className="mobile-logout" onClick={onLogout} aria-label="Sign out"><span>{user.display_name.slice(0, 1).toUpperCase()}</span><LogOut size={13} /></button></div></header>
+      <header className="topbar"><BrandMark className="topbar-mark" size={34} /><div className="topbar-context"><span className="net-pill"><LockKeyhole size={12} /> Air-gapped · 0 external connections</span>{health?.demo_mode && <span className="demo-pill">Fictional demo data</span>}</div><div className="topbar-actions"><span className="topbar-user">{user.display_name}</span><button className="mobile-logout" onClick={onLogout} aria-label="Sign out"><span>{user.display_name.slice(0, 1).toUpperCase()}</span><LogOut size={13} /></button></div></header>
       <div className="content-area" ref={contentAreaRef}>
         {tabs.map(tab => visitedTabs.has(tab.id) && <div className={`screen-route ${activeTab === tab.id ? 'active' : ''}`} key={tab.id} aria-hidden={activeTab !== tab.id}>
           {tab.id === 'search' && <SearchScreen onOpenDocument={openDocument} />}
@@ -715,7 +786,8 @@ function AuthenticatedApp({ user, onLogout }) {
           {tab.id === 'ask' && <AskScreen onOpenDocument={openDocument} />}
           {tab.id === 'compare' && <CompareScreen documents={documents} />}
           {tab.id === 'graph' && <Suspense fallback={<div className="screen document-loading"><LoaderCircle className="spin" /> Loading 3D workspace…</div>}><GraphView onOpenDocument={openDocument} /></Suspense>}
-          {tab.id === 'upload' && <UploadScreen onComplete={(id) => { refresh(); if (id) openDocument(id) }} />}
+          {tab.id === 'access' && <AccessAudit user={user} />}
+          {tab.id === 'upload' && <UploadScreen user={user} onComplete={(id) => { refresh(); if (id) openDocument(id) }} />}
         </div>)}
         {activeTab === 'viewer' && viewer && <DocumentViewer {...viewer} backLabel={viewerBackLabel} onBack={backFromViewer} onOpenDocument={openDocument} />}
       </div>
@@ -736,7 +808,7 @@ function App() {
     setUser(null)
   }
 
-  if (authLoading) return <div className="auth-loading"><div className="brand-mark"><DetroitMark /></div><LoaderCircle className="spin" /> Loading Detroit Records…</div>
+  if (authLoading) return <div className="auth-loading"><BrandMark size={40} /><LoaderCircle className="spin" /> Loading {PRODUCT}…</div>
   if (!user) return <AuthScreen onAuthenticated={setUser} />
   return <AuthenticatedApp user={user} onLogout={logout} />
 }

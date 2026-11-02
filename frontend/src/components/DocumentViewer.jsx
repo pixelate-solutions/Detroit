@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ChevronRight, Download, LoaderCircle, Network, Search, Sparkles } from 'lucide-react'
 import { api, post } from '../api'
-
-function TypeBadge({ type }) {
-  return <span className={`type-badge type-${type}`}>{(type || 'other').replaceAll('_', ' ')}</span>
-}
+import { ClassificationBadge, OcrBadge, TypeBadge } from './ui/Badges'
 
 function highlightText(text, snippet) {
   const words = [...new Set((snippet || '').toLowerCase().match(/[a-z0-9-]{4,}/g) || [])].slice(0, 12)
@@ -114,13 +111,13 @@ export default function DocumentViewer({ documentId, page = 1, snippet = '', bac
     }).catch(err => setError(err.message))
   }, [documentId])
 
-  if (error) return <div className="screen"><button className="back-button" onClick={onBack}><ArrowLeft /> {backLabel}</button><div className="error-notice"><span>{error}</span></div></div>
+  if (error) return <div className="screen"><button className="back-button" onClick={onBack}><ArrowLeft /> {backLabel}</button><div className="error-notice"><div><strong>Access withheld</strong><span>{error} This attempt was recorded in the audit log.</span></div></div></div>
   if (!document) return <div className="screen document-loading"><LoaderCircle className="spin" /> Loading document…</div>
   const isPdf = document.filename.toLowerCase().endsWith('.pdf')
 
   return <div className="screen viewer-screen">
-    <div className="viewer-toolbar"><button className="back-button" onClick={onBack}><ArrowLeft size={17} /> {backLabel}</button><div className="viewer-toolbar-actions"><div className="viewer-file-meta"><TypeBadge type={document.doc_type} /><span>{document.page_count} {document.page_count === 1 ? 'page' : 'pages'}</span></div><a className="viewer-download-button" href={`/api/documents/${document.id}/file`} download={document.filename}><Download size={15} /><span>Download</span></a></div></div>
-    <div className="viewer-title"><div><p className="eyebrow">Municipal record · #{document.id}</p><h1>{document.title}</h1></div>{snippet && <div className="match-indicator"><Search size={15} /> Matched passage highlighted on page {page}</div>}</div>
+    <div className="viewer-toolbar"><button className="back-button" onClick={onBack}><ArrowLeft size={17} /> {backLabel}</button><div className="viewer-toolbar-actions"><div className="viewer-file-meta"><ClassificationBadge value={document.classification} /><OcrBadge status={document.ocr_status} /><TypeBadge type={document.doc_type} /><span>{document.page_count} {document.page_count === 1 ? 'page' : 'pages'}</span></div><a className="viewer-download-button" href={`/api/documents/${document.id}/file`} download={document.filename}><Download size={15} /><span>Download</span></a></div></div>
+    <div className="viewer-title"><div><p className="eyebrow">Record #{document.id}{document.source_unit ? ` · ${document.source_unit}` : ''}</p><h1>{document.title}</h1></div>{snippet && <div className="match-indicator"><Search size={15} /> Matched passage highlighted on page {page}</div>}</div>
     <div className="viewer-layout">
       <div className="document-canvas-wrap">{isPdf ? <PdfViewer documentId={documentId} pageNumber={page} snippet={snippet} /> : <div className="plain-document">{document.full_text.split('\n').map((line, index) => <p key={index}>{highlightText(line, snippet)}</p>)}</div>}</div>
       <aside className="document-sidebar">
