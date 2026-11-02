@@ -7,7 +7,6 @@ from typing import Iterator
 
 from .config import settings
 
-
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -146,6 +145,22 @@ CREATE TABLE IF NOT EXISTS file_entries (
   PRIMARY KEY(owner_user_id, document_id)
 );
 
+CREATE TABLE IF NOT EXISTS audit_log (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  user_id TEXT,
+  user_email TEXT NOT NULL DEFAULT '',
+  user_role TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  resource_type TEXT NOT NULL DEFAULT '',
+  resource_id TEXT,
+  detail TEXT NOT NULL DEFAULT '',
+  outcome TEXT NOT NULL DEFAULT 'allowed',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
 CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_entity_id);
@@ -181,6 +196,20 @@ def initialize_database() -> None:
             connection.execute(
                 "ALTER TABLE conversation_messages ADD COLUMN reasoning_summary TEXT NOT NULL DEFAULT ''"
             )
+        _add_missing_columns(connection, "documents", {
+            "classification": "TEXT NOT NULL DEFAULT 'internal'",
+            "ocr_status": "TEXT NOT NULL DEFAULT 'native'",
+            "chunk_count": "INTEGER NOT NULL DEFAULT 0",
+            "source_unit": "TEXT NOT NULL DEFAULT ''",
+        })
+        _add_missing_columns(connection, "users", {"role": "TEXT NOT NULL DEFAULT 'firefighter'"})
+
+
+def _add_missing_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 @contextmanager
@@ -208,6 +237,10 @@ def row_to_document(row: sqlite3.Row) -> dict:
         "doc_type": row["doc_type"],
         "upload_date": row["upload_date"],
         "page_count": row["page_count"],
+        "classification": row["classification"],
+        "ocr_status": row["ocr_status"],
+        "chunk_count": row["chunk_count"],
+        "source_unit": row["source_unit"],
     }
 
 

@@ -11,9 +11,9 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, Request, Response
 
 from .database import connect, transaction
+from .rbac import DEFAULT_ROLE, ROLES
 
-
-SESSION_COOKIE = "civiclens_session"
+SESSION_COOKIE = "civic_records_session"
 SESSION_LIFETIME = timedelta(hours=12)
 SCRYPT_N = 2**17
 SCRYPT_R = 8
@@ -83,11 +83,14 @@ def public_user(row) -> dict:
         "id": row["id"],
         "email": row["email"],
         "display_name": row["display_name"],
+        "role": row["role"],
         "created_at": row["created_at"],
     }
 
 
-def create_user(email: str, display_name: str, password: str) -> dict:
+def create_user(email: str, display_name: str, password: str, role: str = DEFAULT_ROLE) -> dict:
+    if role not in ROLES:
+        raise ValueError("Unknown role.")
     email = normalize_email(email)
     name = " ".join(display_name.strip().split())
     if len(name) < 2 or len(name) > 80:
@@ -98,14 +101,20 @@ def create_user(email: str, display_name: str, password: str) -> dict:
     try:
         with transaction() as connection:
             connection.execute(
-                "INSERT INTO users(id, email, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, email, name, password_hash, created_at),
+                "INSERT INTO users(id, email, display_name, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, email, name, password_hash, created_at, role),
             )
     except Exception as exc:
         if "UNIQUE constraint failed" in str(exc):
             raise ValueError("An account with that email already exists.") from exc
         raise
-    return {"id": user_id, "email": email, "display_name": name, "created_at": created_at}
+    return {"id": user_id, "email": email, "display_name": name, "role": role, "created_at": created_at}
+
+
+def user_by_email(email: str) -> dict | None:
+    with connect() as connection:
+        row = connection.execute("SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email.strip(),)).fetchone()
+    return public_user(row) if row is not None else None
 
 
 def authenticate_user(email: str, password: str) -> dict | None:

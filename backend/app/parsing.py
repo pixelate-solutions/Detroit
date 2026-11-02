@@ -106,7 +106,12 @@ def infer_title_and_type(filename: str, text: str) -> tuple[str, str]:
     candidate_title = " ".join(title_lines)
     title = candidate_title if 4 <= len(candidate_title) <= 140 else Path(filename).stem.replace("_", " ").title()
     types = [
-        ("meeting_minutes", ("minutes", "city council meeting")),
+        ("incident_report", ("incident report", "nfirs", "after-action", "incident_")),
+        ("sop", ("standard operating", "sop ", "sop_", "operating guideline")),
+        ("inspection_report", ("fire inspection", "inspection", "code enforcement", "followup_ce")),
+        ("pre_incident_plan", ("pre-incident", "preplan")),
+        ("training_record", ("training", "drill")),
+        ("meeting_minutes", ("minutes", "council meeting", "board meeting")),
         ("correspondence", ("memorandum", "email", "correspondence", "complaint")),
         ("inspection_report", ("inspection", "code enforcement", "followup_ce")),
         ("permit", ("permit", "application")),

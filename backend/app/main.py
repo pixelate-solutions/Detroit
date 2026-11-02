@@ -7,12 +7,14 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import audit, demo_ai
+from .ai import ai, clean_history_content
 from .auth import (
     authenticate_user,
     clear_session_cookie,
@@ -21,6 +23,7 @@ from .auth import (
     issue_session,
     revoke_request_session,
     set_session_cookie,
+    user_by_email,
     user_for_request,
 )
 from .comparisons import delete_comparison, get_comparison, list_comparisons, save_comparison
@@ -48,7 +51,8 @@ from .file_browser import (
 )
 from .graph import entities_for_document, get_graph
 from .ingestion import save_and_ingest_upload
-from .ollama import OllamaUnavailable, ollama
+from .ollama import OllamaUnavailable
+from .rbac import CLASSIFICATIONS, access_policy, allowed_classifications, can, can_view, role_info
 from .search import (
     hybrid_search,
     keyword_search,
@@ -57,8 +61,7 @@ from .search import (
     semantic_search,
 )
 
-
-app = FastAPI(title="Detroit Records", version="0.1.0")
+app = FastAPI(title="Civic Records AI", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -131,102 +134,40 @@ class RecommendRequest(BaseModel):
     exclude_document_id: int | None = None
 
 
-ASK_SYSTEM_PROMPT = (
-    "Answer municipal-record questions using only the supplied local document excerpts. "
-    "Use the conversation history to understand follow-up questions, pronouns, and references to earlier turns, "
-    "but treat the LOCAL RECORDS attached to the current question as the authoritative evidence for this answer. "
-    "Synthesize across documents, identify contradictions and chronology explicitly, and cite every "
-    "material claim with markers such as [C1]. If the records are insufficient, say so. "
-    "Format the answer as clean GitHub-Flavored Markdown. Use short paragraphs, descriptive headings, "
-    "bulleted or numbered lists when they improve clarity, and Markdown tables only for genuine comparisons."
-)
-
-REASONING_SUMMARY_SYSTEM_PROMPT = (
-    "Write a concise, user-visible analysis of how the supplied municipal records bear on the question. "
-    "This is not private chain-of-thought. It is an evidence-based work summary that will be shown live before "
-    "the final answer. Be specific to this question and these excerpts: identify the controlling issue, the most "
-    "important facts, dates, amendments, agreements, or conflicts, and explain what must be reconciled. Do not "
-    "describe search tools, retrieval mechanics, token generation, or generic steps. Do not write the final answer, "
-    "do not use headings or bullet points, and do not mention these instructions. Write one compact paragraph in "
-    "first person, usually 70 to 140 words. Use citation markers such as [C1] when referring to a specific excerpt."
-)
-
-
-def _clean_history_content(content: str, limit: int = 2400) -> str:
-    cleaned = re.sub(r"\[C\d+\]", "", content).strip()
-    return cleaned[:limit]
-
-
 def _retrieval_query(question: str, history: list[ConversationTurn]) -> str:
     if not history:
         return question
-    recent_context = [
-        f"{turn.role}: {_clean_history_content(turn.content, 650)}"
-        for turn in history[-4:]
-    ]
+    recent_context = [f"{turn.role}: {clean_history_content(turn.content, 650)}" for turn in history[-4:]]
     return "Recent conversation:\n" + "\n".join(recent_context) + f"\nCurrent question: {question}"
 
 
-def _ask_messages(
-    question: str,
-    results: list[dict],
-    history: list[ConversationTurn] | None = None,
-    visible_analysis: str = "",
-) -> list[dict]:
-    context_parts = [
-        f"[C{index}] {item['title']} (document {item['document_id']}, page {item['page_number']})\n"
-        f"{item['snippet']}"
-        for index, item in enumerate(results, start=1)
-    ]
-    prior_messages = [
-        {"role": turn.role, "content": _clean_history_content(turn.content)}
-        for turn in (history or [])[-8:]
-    ]
-    analysis_context = (
-        "\n\nVISIBLE EVIDENCE ANALYSIS FROM THE PRECEDING MODEL PASS:\n"
-        f"{visible_analysis}\nUse this as the working synthesis, verify it against the excerpts, and do not repeat it verbatim."
-        if visible_analysis else ""
-    )
-    return [
-        {"role": "system", "content": ASK_SYSTEM_PROMPT},
-        *prior_messages,
-        {
-            "role": "user",
-            "content": f"Question: {question}{analysis_context}\n\nLOCAL RECORDS:\n" + "\n\n".join(context_parts),
-        },
-    ]
+def _allowed(request: Request) -> list[str]:
+    return allowed_classifications(current_user(request).get("role", ""))
 
 
-def _reasoning_summary_messages(
-    question: str,
-    results: list[dict],
-    history: list[ConversationTurn] | None = None,
-) -> list[dict]:
-    context_parts = [
-        f"[C{index}] {item['title']} (page {item['page_number']})\n{item['snippet']}"
-        for index, item in enumerate(results[:10], start=1)
-    ]
-    recent_context = [
-        f"{turn.role}: {_clean_history_content(turn.content, 700)}"
-        for turn in (history or [])[-4:]
-    ]
-    conversation_context = (
-        "\n\nRECENT CONVERSATION:\n" + "\n".join(recent_context)
-        if recent_context else ""
-    )
-    return [
-        {"role": "system", "content": REASONING_SUMMARY_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Question: {question}{conversation_context}\n\nLOCAL RECORD EXCERPTS:\n"
-                + "\n\n".join(context_parts)
-            ),
-        },
-    ]
+def _require_document_access(request: Request, row, action: str = "document.view") -> None:
+    user = current_user(request)
+    if not can_view(user.get("role", ""), row["classification"]):
+        audit.log_event(
+            user, action, resource_type="document", resource_id=row["id"],
+            detail=f"Denied: {row['title']} is {row['classification']}", outcome="denied",
+        )
+        raise HTTPException(status_code=403, detail="Your role is not cleared for this record's classification.")
 
 
-def _citation_payload(results: list[dict], indexes: list[int] | set[int]) -> list[dict]:
+def _focused_snippet(item: dict, question: str, limit: int = 340) -> str:
+    """Return the passage window that best matches the question, for citation cards and highlighting."""
+    text = item.get("text") or item["snippet"]
+    if not question:
+        return item["snippet"]
+    evidence = demo_ai.select_evidence(question, [{**item, "text": text}], limit=2)
+    if not evidence:
+        return item["snippet"]
+    joined = " ".join(sentence for _, sentence, _ in evidence)
+    return joined if len(joined) <= limit else joined[: limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+def _citation_payload(results: list[dict], indexes: list[int] | set[int], question: str = "") -> list[dict]:
     citations = []
     for index in sorted(indexes):
         if 1 <= index <= len(results):
@@ -235,7 +176,8 @@ def _citation_payload(results: list[dict], indexes: list[int] | set[int]) -> lis
                 {
                     "document_id": item["document_id"],
                     "document_title": item["title"],
-                    "snippet": item["snippet"],
+                    "classification": item.get("classification", ""),
+                    "snippet": _focused_snippet(item, question),
                     "page_number": item["page_number"],
                     "marker": f"C{index}",
                 }
@@ -243,11 +185,11 @@ def _citation_payload(results: list[dict], indexes: list[int] | set[int]) -> lis
     return citations
 
 
-def _answer_citations(answer: str, results: list[dict]) -> list[dict]:
+def _answer_citations(answer: str, results: list[dict], question: str = "") -> list[dict]:
     cited_numbers = {int(value) for value in re.findall(r"\[C(\d+)\]", answer)}
     if not cited_numbers:
         cited_numbers = set(range(1, min(3, len(results)) + 1))
-    return _citation_payload(results, cited_numbers)
+    return _citation_payload(results, cited_numbers, question)
 
 
 def _stream_line(event_type: str, **payload) -> str:
@@ -261,7 +203,7 @@ def startup() -> None:
 
 @app.middleware("http")
 async def authenticate_api_request(request: Request, call_next):
-    public_paths = {"/api/health", "/api/auth/signup", "/api/auth/login"}
+    public_paths = {"/api/health", "/api/auth/signup", "/api/auth/login", "/api/demo/accounts", "/api/demo/login"}
     if request.method != "OPTIONS" and request.url.path.startswith("/api/") and request.url.path not in public_paths:
         user = user_for_request(request)
         if user is None:
@@ -290,17 +232,67 @@ def signup(payload: SignupRequest, request: Request, response: Response) -> dict
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     token = issue_session(user["id"])
     set_session_cookie(response, request, token)
-    return {"user": user}
+    audit.log_event(user, "auth.signup")
+    return {"user": _user_payload(user)}
 
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, request: Request, response: Response) -> dict:
     user = authenticate_user(payload.email, payload.password)
     if user is None:
+        audit.log_event({"email": payload.email}, "auth.login", detail="Failed sign-in", outcome="denied")
         raise HTTPException(status_code=401, detail="Email or password is incorrect.")
     token = issue_session(user["id"])
     set_session_cookie(response, request, token)
-    return {"user": user}
+    audit.log_event(user, "auth.login")
+    return {"user": _user_payload(user)}
+
+
+def _user_payload(user: dict) -> dict:
+    info = role_info(user.get("role", ""))
+    return {
+        **user,
+        "role_label": info["label"],
+        "classifications": list(info["classifications"]),
+        "permissions": list(info["permissions"]),
+    }
+
+
+DEMO_ACCOUNTS = [
+    {"email": "r.alvarez@rivergate-fd.example", "display_name": "Capt. Rosa Alvarez", "role": "fire_officer"},
+    {"email": "d.okafor@rivergate-fd.example", "display_name": "Dana Okafor", "role": "records_admin"},
+    {"email": "m.chen@rivergate-fd.example", "display_name": "FF Marcus Chen", "role": "firefighter"},
+    {"email": "pio@rivergate-fd.example", "display_name": "Jamie Ruiz", "role": "public_info"},
+]
+
+
+@app.get("/api/demo/accounts")
+def demo_accounts() -> dict:
+    if not settings.demo_mode:
+        return {"enabled": False, "accounts": []}
+    accounts = []
+    for account in DEMO_ACCOUNTS:
+        if user_by_email(account["email"]):
+            accounts.append({**account, "role_label": role_info(account["role"])["label"]})
+    return {"enabled": True, "deployment": settings.deployment_name, "accounts": accounts}
+
+
+class DemoLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+@app.post("/api/demo/login")
+def demo_login(payload: DemoLoginRequest, request: Request, response: Response) -> dict:
+    allowed_emails = {account["email"] for account in DEMO_ACCOUNTS}
+    if not settings.demo_mode or payload.email not in allowed_emails:
+        raise HTTPException(status_code=404, detail="Demo sign-in is disabled.")
+    user = user_by_email(payload.email)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Run the demo seed first: python -m app.seed_demo")
+    token = issue_session(user["id"])
+    set_session_cookie(response, request, token)
+    audit.log_event(user, "auth.login", detail="Demo sign-in")
+    return {"user": _user_payload(user)}
 
 
 @app.post("/api/auth/logout")
@@ -312,7 +304,46 @@ def logout(request: Request, response: Response) -> dict:
 
 @app.get("/api/auth/me")
 def me(request: Request) -> dict:
-    return {"user": current_user(request)}
+    return {"user": _user_payload(current_user(request))}
+
+
+@app.get("/api/access-policy")
+def get_access_policy(request: Request) -> dict:
+    user = current_user(request)
+    with connect() as connection:
+        rows = connection.execute(
+            "SELECT classification, count(*) AS n FROM documents GROUP BY classification"
+        ).fetchall()
+    counts = {row["classification"]: row["n"] for row in rows}
+    policy = access_policy()
+    for item in policy["classifications"]:
+        item["document_count"] = counts.get(item["id"], 0)
+        item["visible"] = can_view(user.get("role", ""), item["id"])
+    return {**policy, "user": _user_payload(user)}
+
+
+@app.get("/api/audit")
+def audit_index(
+    request: Request,
+    action: str | None = None,
+    outcome: str | None = None,
+    include_sign_ins: bool = False,
+    limit: int = 200,
+) -> dict:
+    user = current_user(request)
+    if not can(user.get("role", ""), "audit:read"):
+        return {
+            "events": audit.list_events(user_id=user["id"], limit=min(limit, 500)),
+            "summary": None,
+            "scope": "self",
+        }
+    return {
+        "events": audit.list_events(
+            action=action, outcome=outcome, include_sign_ins=include_sign_ins, limit=min(limit, 500)
+        ),
+        "summary": audit.summary(),
+        "scope": "all",
+    }
 
 
 @app.get("/api/conversations")
@@ -371,7 +402,7 @@ def files_index(
     view: str = "root",
     query: str = "",
 ) -> dict:
-    return browse_files(current_user(request)["id"], folder_id, view, query)
+    return browse_files(current_user(request)["id"], folder_id, view, query, _allowed(request))
 
 
 @app.get("/api/file-folders")
@@ -411,6 +442,11 @@ def file_update(document_id: int, payload: FileUpdateRequest, request: Request) 
     fields = payload.model_fields_set
     if not fields:
         raise HTTPException(status_code=422, detail="Choose a file property to update.")
+    with connect() as connection:
+        row = connection.execute("SELECT id, title, classification FROM documents WHERE id = ?", (document_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+    _require_document_access(request, row, "document.update")
     return {
         "file": update_file(
             current_user(request)["id"],
@@ -428,49 +464,72 @@ def file_update(document_id: int, payload: FileUpdateRequest, request: Request) 
 def health() -> dict:
     with connect() as connection:
         document_count = connection.execute("SELECT count(*) FROM documents").fetchone()[0]
-    try:
-        local_ai = ollama.health()
-    except OllamaUnavailable as exc:
-        local_ai = {
-            "available": False,
-            "error": str(exc),
-            "llm_model": settings.llm_model,
-            "embedding_model": settings.embedding_model,
-        }
-    return {"status": "ok", "offline_runtime": True, "document_count": document_count, "local_ai": local_ai}
+    return {
+        "status": "ok",
+        "offline_runtime": True,
+        "demo_mode": settings.demo_mode,
+        "deployment": settings.deployment_name,
+        "document_count": document_count,
+        "local_ai": ai.health(),
+    }
 
 
 @app.get("/api/documents")
-def list_documents() -> dict:
+def list_documents(request: Request) -> dict:
+    allowed = _allowed(request)
+    marks = ",".join("?" for _ in allowed)
     with connect() as connection:
-        rows = connection.execute("SELECT * FROM documents ORDER BY upload_date DESC, id DESC").fetchall()
-    return {"documents": [row_to_document(row) for row in rows]}
+        rows = connection.execute(
+            f"SELECT * FROM documents WHERE classification IN ({marks}) ORDER BY upload_date DESC, id DESC", allowed
+        ).fetchall()
+        hidden = connection.execute(
+            f"SELECT count(*) FROM documents WHERE classification NOT IN ({marks})", allowed
+        ).fetchone()[0]
+    return {"documents": [row_to_document(row) for row in rows], "hidden_by_policy": hidden}
 
 
 @app.get("/api/documents/{document_id}")
-def get_document(document_id: int) -> dict:
+def get_document(document_id: int, request: Request) -> dict:
     with connect() as connection:
         row = connection.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_document_access(request, row)
+    audit.log_event(current_user(request), "document.view", resource_type="document", resource_id=document_id, detail=row["title"])
     result = row_to_document(row)
     result.update({"full_text": row["full_text"], "entities": entities_for_document(document_id)})
     return result
 
 
 @app.get("/api/documents/{document_id}/file")
-def get_document_file(document_id: int):
+def get_document_file(document_id: int, request: Request):
     with connect() as connection:
-        row = connection.execute("SELECT filename, file_path FROM documents WHERE id = ?", (document_id,)).fetchone()
+        row = connection.execute(
+            "SELECT id, title, classification, filename, file_path FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
     if row is None or not Path(row["file_path"]).is_file():
         raise HTTPException(status_code=404, detail="Document file not found")
+    _require_document_access(request, row, "document.download")
     return FileResponse(row["file_path"], filename=row["filename"])
 
 
 @app.post("/api/documents/upload")
-async def upload_document(file: UploadFile = File(...)) -> dict:
+async def upload_document(
+    request: Request, file: UploadFile = File(...), classification: str = Form("internal")
+) -> dict:
+    user = current_user(request)
+    if not can(user.get("role", ""), "ingest"):
+        audit.log_event(user, "document.ingest", detail=file.filename or "", outcome="denied")
+        raise HTTPException(status_code=403, detail="Your role does not permit adding records.")
+    if classification not in CLASSIFICATIONS or not can_view(user.get("role", ""), classification):
+        raise HTTPException(status_code=422, detail="Choose a classification you are cleared for.")
     try:
-        return await save_and_ingest_upload(file)
+        result = await save_and_ingest_upload(file, classification)
+        audit.log_event(
+            user, "document.ingest", resource_type="document", resource_id=result["document_id"],
+            detail=result["title"], metadata={"classification": classification, "ocr": result["ocr_used"]},
+        )
+        return result
     except OllamaUnavailable:
         raise
     except (ValueError, RuntimeError) as exc:
@@ -478,28 +537,35 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
 
 
 @app.post("/api/search")
-def search(request: SearchRequest) -> dict:
-    return {"query": request.query, "results": hybrid_search(request.query, request.top_k)}
+def search(payload: SearchRequest, request: Request) -> dict:
+    results = hybrid_search(payload.query, _allowed(request), payload.top_k)
+    audit.log_event(current_user(request), "search", detail=payload.query, metadata={"results": len(results)})
+    return {"query": payload.query, "results": results}
 
 
 @app.post("/api/ask")
-def ask(request: AskRequest) -> dict:
-    keyword = keyword_search(request.question, 20)
-    semantic = semantic_search(_retrieval_query(request.question, request.history), 20)
+def ask(payload: AskRequest, request: Request) -> dict:
+    allowed = _allowed(request)
+    keyword = keyword_search(payload.question, 20, allowed)
+    semantic = semantic_search(_retrieval_query(payload.question, payload.history), 20, allowed)
     results = merge_hybrid_results(keyword, semantic, 10)
     if not results:
-        return {"answer": "I could not find relevant information in the local document collection.", "citations": []}
-    answer = ollama.chat(
-        _ask_messages(request.question, results, request.history),
-        temperature=0.1,
-        max_tokens=1800,
+        answer, citations = "I could not find relevant information in the records available to your role.", []
+    else:
+        answer = ai.answer(payload.question, results, [turn.model_dump() for turn in payload.history])
+        citations = _answer_citations(answer, results, payload.question)
+    audit.log_event(
+        current_user(request), "ask", detail=payload.question,
+        metadata={"cited_documents": sorted({c["document_id"] for c in citations}), "provider": ai.mode},
     )
-    return {"answer": answer, "citations": _answer_citations(answer, results)}
+    return {"answer": answer, "citations": citations}
 
 
 @app.post("/api/ask/stream")
 def ask_stream(payload: AskRequest, http_request: Request):
-    user_id = current_user(http_request)["id"]
+    user = current_user(http_request)
+    user_id = user["id"]
+    allowed = allowed_classifications(user.get("role", ""))
     if payload.conversation_id:
         conversation = require_conversation(payload.conversation_id, user_id, owner_only=True)
         history_rows = conversation_history(payload.conversation_id, user_id)
@@ -557,10 +623,10 @@ def ask_stream(payload: AskRequest, http_request: Request):
                 id="keyword",
                 status="running",
                 kind="tool",
-                title="Searching Detroit records",
+                title="Searching department records",
                 detail="Looking for exact names, dates, and phrases",
             )
-            keyword = keyword_search(payload.question, retrieval_limit)
+            keyword = keyword_search(payload.question, retrieval_limit, allowed)
             yield trace_line(
                 id="keyword",
                 status="complete",
@@ -580,7 +646,7 @@ def ask_stream(payload: AskRequest, http_request: Request):
                     else "Looking for records that discuss the same topic"
                 ),
             )
-            semantic = semantic_search(_retrieval_query(payload.question, history), retrieval_limit)
+            semantic = semantic_search(_retrieval_query(payload.question, history), retrieval_limit, allowed)
             yield trace_line(
                 id="semantic",
                 status="complete",
@@ -600,16 +666,16 @@ def ask_stream(payload: AskRequest, http_request: Request):
                 status="complete",
                 kind="reading",
                 title="Reading the strongest sources",
-                detail=f"Reviewing {len(results)} passages across {document_count} municipal records",
+                detail=f"Reviewing {len(results)} passages across {document_count} records",
                 document_count=document_count,
             )
             yield _stream_line(
                 "sources",
-                citations=_citation_payload(results, list(range(1, min(6, len(results)) + 1))),
+                citations=_citation_payload(results, list(range(1, min(6, len(results)) + 1)), payload.question),
             )
 
             if not results:
-                answer = "I could not find relevant information in the local document collection."
+                answer = "I could not find relevant information in the records available to your role."
                 answer_parts.append(answer)
                 yield _stream_line("delta", text=answer)
                 yield _stream_line("citations", citations=[])
@@ -626,11 +692,8 @@ def ask_stream(payload: AskRequest, http_request: Request):
                 detail="Generating a visible evidence analysis for this question",
                 document_count=document_count,
             )
-            for text in ollama.visible_analysis_stream(
-                _reasoning_summary_messages(payload.question, results, history),
-                temperature=0.25,
-                max_tokens=360,
-            ):
+            history_dicts = [turn.model_dump() for turn in history]
+            for text in ai.analysis_stream(payload.question, results, history_dicts):
                 if not text:
                     continue
                 reasoning_parts.append(text)
@@ -646,14 +709,7 @@ def ask_stream(payload: AskRequest, http_request: Request):
             )
 
             writing_started = False
-            for event in ollama.chat_stream(
-                _ask_messages(payload.question, results, history, "".join(reasoning_parts)),
-                temperature=0.1,
-                max_tokens=1800,
-            ):
-                if event["type"] == "reasoning_started":
-                    continue
-                text = event.get("text", "")
+            for text in ai.answer_stream(payload.question, results, history_dicts, "".join(reasoning_parts)):
                 if not text:
                     continue
                 if not writing_started:
@@ -678,7 +734,14 @@ def ask_stream(payload: AskRequest, http_request: Request):
                 detail=f"Completed in {time.monotonic() - started:.1f} seconds",
                 document_count=document_count,
             )
-            final_citations.extend(_answer_citations("".join(reasoning_parts) + "\n" + answer, results))
+            final_citations.extend(_answer_citations(answer, results, payload.question))
+            audit.log_event(
+                user, "ask", resource_type="conversation", resource_id=conversation_id, detail=payload.question,
+                metadata={
+                    "cited_documents": sorted({c["document_id"] for c in final_citations}),
+                    "provider": ai.mode,
+                },
+            )
             yield _stream_line("citations", citations=final_citations)
             sources = persist("complete")
             yield _stream_line("conversation_sources", sources=sources)
@@ -716,7 +779,7 @@ def ask_stream(payload: AskRequest, http_request: Request):
 def compare(payload: CompareRequest, request: Request) -> dict:
     with connect() as connection:
         rows = connection.execute(
-            "SELECT id, title, full_text FROM documents WHERE id IN (?, ?)",
+            "SELECT id, title, full_text, classification FROM documents WHERE id IN (?, ?)",
             (payload.document_id_a, payload.document_id_b),
         ).fetchall()
     by_id = {row["id"]: row for row in rows}
@@ -726,6 +789,8 @@ def compare(payload: CompareRequest, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="One or both documents were not found")
     before = by_id[payload.document_id_a]
     after = by_id[payload.document_id_b]
+    _require_document_access(request, before, "compare")
+    _require_document_access(request, after, "compare")
     diff_lines = []
     for line in difflib.ndiff(before["full_text"].splitlines(), after["full_text"].splitlines()):
         prefix = line[:2]
@@ -733,25 +798,10 @@ def compare(payload: CompareRequest, request: Request) -> dict:
             continue
         kind = "added" if prefix == "+ " else "removed" if prefix == "- " else "unchanged"
         diff_lines.append({"type": kind, "text": line[2:]})
-    summary = ollama.chat(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "Compare two versions of a municipal document. Explain only substantive changes, including "
-                    "money, dates, obligations, scope, and public impact. Be concise and use bullets."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"ORIGINAL — {before['title']}:\n{before['full_text'][:50000]}\n\n"
-                    f"REVISED — {after['title']}:\n{after['full_text'][:50000]}"
-                ),
-            },
-        ],
-        temperature=0.1,
-        max_tokens=1200,
+    summary = ai.compare_summary(dict(before), dict(after), diff_lines)
+    audit.log_event(
+        current_user(request), "compare", detail=f"{before['title']} vs {after['title']}",
+        metadata={"documents": [before["id"], after["id"]]},
     )
     comparison_id = save_comparison(
         current_user(request)["id"],
@@ -770,15 +820,15 @@ def compare(payload: CompareRequest, request: Request) -> dict:
 
 
 @app.post("/api/recommend")
-def recommend(request: RecommendRequest) -> dict:
+def recommend(payload: RecommendRequest, request: Request) -> dict:
     return {
-        "documents": recommend_documents(request.text, request.top_k, request.exclude_document_id)
+        "documents": recommend_documents(payload.text, _allowed(request), payload.top_k, payload.exclude_document_id)
     }
 
 
 @app.get("/api/graph")
-def graph() -> dict:
-    return get_graph()
+def graph(request: Request) -> dict:
+    return get_graph(_allowed(request))
 
 
 if settings.frontend_dist.is_dir():

@@ -138,11 +138,17 @@ def _file_payload(row) -> dict:
         "folder_id": row["folder_id"],
         "starred": bool(row["starred"]),
         "trashed": bool(row["trashed"]),
+        "classification": row["classification"],
+        "ocr_status": row["ocr_status"],
+        "chunk_count": row["chunk_count"],
+        "source_unit": row["source_unit"],
         "modified_at": row["entry_updated_at"] or row["upload_date"],
     }
 
 
-def browse_files(user_id: str, folder_id: str | None, view: str, query: str) -> dict:
+def browse_files(user_id: str, folder_id: str | None, view: str, query: str, allowed: list[str] | None = None) -> dict:
+    allowed = allowed or ["public"]
+    class_marks = ",".join("?" for _ in allowed)
     query = " ".join(query.strip().split())[:200]
     if view not in {"root", "folder", "starred", "trash", "search"}:
         raise HTTPException(status_code=422, detail="Unknown file view.")
@@ -191,10 +197,16 @@ def browse_files(user_id: str, folder_id: str | None, view: str, query: str) -> 
                        COALESCE(e.trashed, 0) AS trashed, e.updated_at AS entry_updated_at
                 FROM documents d
                 LEFT JOIN file_entries e ON e.document_id = d.id AND e.owner_user_id = ?
-                WHERE {file_where}""",
-            file_params,
+                WHERE ({file_where}) AND d.classification IN ({class_marks})
+                ORDER BY d.title COLLATE NOCASE""",
+            [*file_params, *allowed],
         ).fetchall()
-        total_documents = connection.execute("SELECT count(*) FROM documents").fetchone()[0]
+        total_documents = connection.execute(
+            f"SELECT count(*) FROM documents WHERE classification IN ({class_marks})", allowed
+        ).fetchone()[0]
+        hidden_documents = connection.execute(
+            f"SELECT count(*) FROM documents WHERE classification NOT IN ({class_marks})", allowed
+        ).fetchone()[0]
         starred_count = connection.execute(
             "SELECT count(*) FROM file_entries WHERE owner_user_id = ? AND starred = 1 AND trashed = 0",
             (user_id,),
@@ -209,7 +221,12 @@ def browse_files(user_id: str, folder_id: str | None, view: str, query: str) -> 
         "breadcrumbs": breadcrumbs,
         "folders": [dict(row) for row in folder_rows],
         "files": [_file_payload(row) for row in file_rows],
-        "counts": {"documents": total_documents, "starred": starred_count, "trash": trash_count},
+        "counts": {
+            "documents": total_documents,
+            "starred": starred_count,
+            "trash": trash_count,
+            "hidden_by_policy": hidden_documents,
+        },
     }
 
 

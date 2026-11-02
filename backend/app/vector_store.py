@@ -16,17 +16,22 @@ class VectorStore:
             path=str(settings.chroma_dir),
             settings=ChromaSettings(anonymized_telemetry=False),
         )
+        from .ai import ai
+
         self.collection = self.client.get_or_create_collection(
-            "municipal_chunks", metadata={"hnsw:space": "cosine"}
+            ai.collection_name, metadata={"hnsw:space": "cosine"}
         )
 
     def add(self, ids: list[str], texts: list[str], embeddings: list[list[float]], metadatas: list[dict]) -> None:
         self.collection.upsert(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
 
-    def query(self, embedding: list[float], top_k: int) -> list[dict]:
+    def query(self, embedding: list[float], top_k: int, classifications: list[str] | None = None) -> list[dict]:
         if self.collection.count() == 0:
             return []
-        result = self.collection.query(query_embeddings=[embedding], n_results=min(top_k, self.collection.count()))
+        where = {"classification": {"$in": classifications}} if classifications else None
+        result = self.collection.query(
+            query_embeddings=[embedding], n_results=min(top_k, self.collection.count()), where=where
+        )
         rows = []
         for index, chroma_id in enumerate(result["ids"][0]):
             rows.append(

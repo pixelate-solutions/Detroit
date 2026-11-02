@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import math
 import re
 from collections import defaultdict
 
+from .ai import ai
 from .database import connect
-from .ollama import ollama
 from .vector_store import get_vector_store
 
 
@@ -23,27 +22,33 @@ def _format_result(row, score: float, channel: str) -> dict:
         "document_id": row["document_id"],
         "title": row["title"],
         "doc_type": row["doc_type"],
+        "classification": row["classification"],
         "snippet": snippet,
+        "text": row["chunk_text"].strip(),
         "page_number": row["page_number"],
         "score": round(max(0.0, min(1.0, score)), 4),
         "matched_by": channel,
     }
 
 
-def keyword_search(query: str, top_k: int) -> list[dict]:
+def _marks(values: list[str]) -> str:
+    return ",".join("?" for _ in values)
+
+
+def keyword_search(query: str, top_k: int, allowed: list[str]) -> list[dict]:
     fts_query = _safe_fts_query(query)
-    if not fts_query:
+    if not fts_query or not allowed:
         return []
     with connect() as connection:
         rows = connection.execute(
-            """SELECT c.id AS chunk_id, c.document_id, c.chunk_text, c.page_number,
-                      d.title, d.doc_type, bm25(chunks_fts) AS rank
+            f"""SELECT c.id AS chunk_id, c.document_id, c.chunk_text, c.page_number,
+                      d.title, d.doc_type, d.classification, bm25(chunks_fts) AS rank
                FROM chunks_fts
                JOIN chunks c ON c.id = chunks_fts.rowid
                JOIN documents d ON d.id = c.document_id
-               WHERE chunks_fts MATCH ?
+               WHERE chunks_fts MATCH ? AND d.classification IN ({_marks(allowed)})
                ORDER BY rank LIMIT ?""",
-            (fts_query, top_k),
+            (fts_query, *allowed, top_k),
         ).fetchall()
     if not rows:
         return []
@@ -52,9 +57,11 @@ def keyword_search(query: str, top_k: int) -> list[dict]:
     return [_format_result(row, strength / best, "keyword") for row, strength in zip(rows, strengths)]
 
 
-def semantic_search(query: str, top_k: int) -> list[dict]:
-    embedding = ollama.embed([query])[0]
-    vectors = get_vector_store().query(embedding, top_k)
+def semantic_search(query: str, top_k: int, allowed: list[str]) -> list[dict]:
+    if not allowed:
+        return []
+    embedding = ai.embed([query])[0]
+    vectors = get_vector_store().query(embedding, top_k, allowed)
     if not vectors:
         return []
     chroma_ids = [item["chroma_id"] for item in vectors]
@@ -62,9 +69,9 @@ def semantic_search(query: str, top_k: int) -> list[dict]:
     with connect() as connection:
         rows = connection.execute(
             f"""SELECT c.id AS chunk_id, c.document_id, c.chunk_text, c.page_number, c.chroma_id,
-                       d.title, d.doc_type FROM chunks c JOIN documents d ON d.id = c.document_id
-                WHERE c.chroma_id IN ({placeholders})""",
-            chroma_ids,
+                       d.title, d.doc_type, d.classification FROM chunks c JOIN documents d ON d.id = c.document_id
+                WHERE c.chroma_id IN ({placeholders}) AND d.classification IN ({_marks(allowed)})""",
+            [*chroma_ids, *allowed],
         ).fetchall()
     by_id = {row["chroma_id"]: row for row in rows}
     results = []
@@ -97,14 +104,16 @@ def merge_hybrid_results(keyword: list[dict], semantic: list[dict], top_k: int =
     return sorted(ranked, key=lambda item: item["score"], reverse=True)[:top_k]
 
 
-def hybrid_search(query: str, top_k: int = 8) -> list[dict]:
-    keyword = keyword_search(query, max(top_k * 2, 10))
-    semantic = semantic_search(query, max(top_k * 2, 10))
+def hybrid_search(query: str, allowed: list[str], top_k: int = 8) -> list[dict]:
+    keyword = keyword_search(query, max(top_k * 2, 10), allowed)
+    semantic = semantic_search(query, max(top_k * 2, 10), allowed)
     return merge_hybrid_results(keyword, semantic, top_k)
 
 
-def recommend_documents(text: str, top_k: int = 6, exclude_document_id: int | None = None) -> list[dict]:
-    chunks = semantic_search(text, max(top_k * 4, 16))
+def recommend_documents(
+    text: str, allowed: list[str], top_k: int = 6, exclude_document_id: int | None = None
+) -> list[dict]:
+    chunks = semantic_search(text, max(top_k * 4, 16), allowed)
     best: dict[int, dict] = {}
     for item in chunks:
         document_id = item["document_id"]
@@ -115,6 +124,7 @@ def recommend_documents(text: str, top_k: int = 6, exclude_document_id: int | No
                 "document_id": document_id,
                 "title": item["title"],
                 "doc_type": item["doc_type"],
+                "classification": item["classification"],
                 "score": item["score"],
                 "snippet": item["snippet"],
             }

@@ -65,13 +65,21 @@ def persist_graph(connection, document_id: int, graph: dict) -> tuple[int, int]:
     return entity_count, relation_count
 
 
-def get_graph() -> dict:
+def get_graph(allowed: list[str]) -> dict:
+    marks = ",".join("?" for _ in allowed) or "NULL"
     with connect() as connection:
-        entities = connection.execute("SELECT * FROM entities ORDER BY name").fetchall()
         source_rows = connection.execute(
-            """SELECT es.entity_id, d.id, d.title, d.doc_type
-               FROM entity_sources es JOIN documents d ON d.id = es.document_id"""
+            f"""SELECT es.entity_id, d.id, d.title, d.doc_type
+               FROM entity_sources es JOIN documents d ON d.id = es.document_id
+               WHERE d.classification IN ({marks})""",
+            allowed,
         ).fetchall()
+        visible_ids = {row["entity_id"] for row in source_rows}
+        entities = [
+            row for row in connection.execute("SELECT * FROM entities ORDER BY name").fetchall()
+            if row["id"] in visible_ids
+        ]
+        visible_documents = {row["id"] for row in source_rows}
         sources: dict[int, list[dict]] = defaultdict(list)
         for row in source_rows:
             sources[row["entity_id"]].append(
@@ -97,7 +105,9 @@ def get_graph() -> dict:
                     "sourceDocumentId": row["source_document_id"],
                 }
                 for row in relations
-                if row["source_entity_id"] in id_to_name and row["target_entity_id"] in id_to_name
+                if row["source_entity_id"] in id_to_name
+                and row["target_entity_id"] in id_to_name
+                and row["source_document_id"] in visible_documents
             ],
         }
 
