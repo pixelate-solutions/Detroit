@@ -1,1 +1,1 @@
-"""Detroit Records municipal document intelligence service."""
+"""Civic Records AI: on-prem document intelligence for public-safety and local-government records."""

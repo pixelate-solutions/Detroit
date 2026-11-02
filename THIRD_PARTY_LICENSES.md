@@ -2,7 +2,7 @@
 
 ## Memory Knowledge Graph 3D
 
-The Detroit Records knowledge-graph screen adapts the data processing, type coloring,
+The Civic Records AI knowledge-graph screen adapts the data processing, type coloring,
 labeling, camera focus, filtering, and search interaction patterns from
 [Memory Knowledge Graph 3D](https://github.com/TheSethRose/Memory-Knowledge-Graph-3D)
 by Seth Rose.

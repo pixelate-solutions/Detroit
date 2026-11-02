@@ -235,7 +235,7 @@ def share_conversation(conversation_id: str, owner_user_id: str, email: str) -> 
             (email,),
         ).fetchone()
         if recipient is None:
-            raise HTTPException(status_code=404, detail="No Detroit Records user has that email address.")
+            raise HTTPException(status_code=404, detail="No user has that email address.")
         if recipient["id"] == owner_user_id:
             raise HTTPException(status_code=422, detail="You already own this conversation.")
         connection.execute(
